@@ -7,13 +7,22 @@
 // statement is covered the moment any test walks that line, whether or not the
 // test checks which error came back.
 //
-// Scope is one package. A sentinel is "emitted" when a non-test file of the
-// package references it from inside a function body — a reference in a const or
-// var declaration is a re-export, not an emission, and is deliberately ignored.
-// A sentinel is "asserted" when a test file of the same package passes it to an
-// errors.Is-style matcher, or binds it to a want/expect-prefixed field of a
-// table case (the shape yze/errtest mandates, where the loop matches
-// tt.wantErr generically and the sentinel appears only in the case literal).
+// A sentinel is "emitted" when a non-test file of the package references it from
+// inside a function body — a reference in a const or var declaration is a
+// re-export, not an emission, and is deliberately ignored. It is "asserted" when
+// a test file IN THE PACKAGE'S DIRECTORY passes it to an errors.Is-style
+// matcher, or binds it to a want/expect-prefixed field of a table case (the
+// shape yze/errtest mandates, where the loop matches tt.wantErr generically and
+// the sentinel appears only in the case literal).
+//
+// The assertion corpus is read from the DIRECTORY rather than from the analysis
+// pass, and that is the whole point. Go splits a package's tests across two
+// compilation units — the internal `package p` test files and the external
+// `package p_test` ones — which go/analysis presents as separate passes. A pass
+// over p can never see p_test's files, so reading assertions from the pass
+// reported every sentinel asserted only from the external test package, which
+// is the dominant style. The directory holds both. yze/testfile reads the
+// directory for the same reason.
 //
 // Keying on the emission site rather than the declaration site is what keeps
 // this analyzer quiet across module boundaries: a library that declares
@@ -25,6 +34,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -35,11 +45,7 @@ import (
 	"golang.org/x/tools/go/ast/inspector"
 )
 
-// message is the diagnostic emitted for an unasserted sentinel. It is reported
-// against the package's tests rather than the emission site, because the defect
-// is a missing test and that is where the fix belongs — and because a diagnostic
-// anchored in a non-test file would be unreachable for the plain (test-free)
-// pass of the same package, which by design stays silent.
+// message is the diagnostic emitted for an unasserted sentinel.
 const message = "sentinel %s is emitted by this package but no test asserts it with errors.Is"
 
 // Analyzer reports sentinels a package emits without any test asserting them.
@@ -61,159 +67,105 @@ var Registration = goyze.Registration{
 // fileName is a source file's path as recorded in the pass's file set.
 type fileName string
 
+// dirPath is the filesystem path of the analyzed package's directory.
+type dirPath string
+
 // memberName is an identifier being classified — a callee or a struct field.
 type memberName string
 
-// sites records, per sentinel, the position it was first seen at.
-type sites map[*types.Const]token.Pos
+// sentinelName is an error sentinel's identifier.
+type sentinelName string
+
+// emissions records, per sentinel, the position it is first emitted from.
+type emissions map[sentinelName]token.Pos
 
 // run reports every sentinel emitted by the package's non-test code that none
-// of its test files assert.
+// of its tests assert.
 func run(pass *analysis.Pass) (any, error) {
-	if !isCorrelatable(pass) {
+	ins := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	emitted := emittedSentinels(pass, ins)
+	if len(emitted) == 0 {
 		return nil, nil
 	}
-	ins := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
-	emitted, asserted := sites{}, sites{}
-	collectEmitted(pass, ins, emitted)
-	collectAsserted(pass, ins, asserted)
-	report(pass, emitted, asserted)
+	report(pass, emitted, assertedSentinels(readDir, readFile, packageDir(pass.Fset, pass.Files)))
 	return nil, nil
 }
 
-// isCorrelatable reports whether this pass can see both an emission and its
-// assertion — that is, whether it holds test files AND non-test files at once.
-//
-// go/analysis presents a package as several passes: the plain package (no test
-// files) and its test variant (non-test files plus any `package a` test files).
-// Only the latter can correlate the two, so the plain pass must stay silent or
-// every sentinel would be reported as unasserted. This same guard means a
-// package whose tests live entirely in an EXTERNAL `package a_test` is not
-// analyzed: its assertions sit in a different package from the emissions, and
-// no single pass holds both. Silence there is deliberate — a false positive on
-// correct code would disqualify this as a gate.
-func isCorrelatable(pass *analysis.Pass) bool {
-	var tests, sources int
-	for _, file := range pass.Files {
-		if isTest(fileOf(pass, file)) {
-			tests++
-			continue
-		}
-		sources++
-	}
-	return tests > 0 && sources > 0
-}
-
-// collectEmitted records every sentinel referenced from inside a function body
-// in a non-test file.
-func collectEmitted(pass *analysis.Pass, ins *inspector.Inspector, into sites) {
+// emittedSentinels records every sentinel referenced from inside a function body
+// in a non-test file, at its earliest such position.
+func emittedSentinels(pass *analysis.Pass, ins *inspector.Inspector) emissions {
+	found := emissions{}
 	ins.WithStack([]ast.Node{(*ast.Ident)(nil)}, func(n ast.Node, isPush bool, stack []ast.Node) bool {
 		if !isPush || isTest(fileOf(pass, n)) || !inFuncBody(stack) {
 			return true
 		}
-		into.add(sentinelOf(pass, n), n.Pos())
+		found.add(sentinelOf(pass.TypesInfo, n), n.Pos())
 		return true
 	})
+	return found
 }
 
-// collectAsserted records every sentinel a test file matches against.
-func collectAsserted(pass *analysis.Pass, ins *inspector.Inspector, into sites) {
-	nodes := []ast.Node{(*ast.CallExpr)(nil), (*ast.KeyValueExpr)(nil)}
-	ins.Preorder(nodes, func(n ast.Node) {
-		if !isTest(fileOf(pass, n)) {
-			return
-		}
-		switch node := n.(type) {
-		case *ast.CallExpr:
-			fromCall(pass, node, into)
-		case *ast.KeyValueExpr:
-			fromField(pass, node, into)
-		}
-	})
-}
-
-// fromCall records the sentinels passed to an errors.Is-style matcher.
-func fromCall(pass *analysis.Pass, call *ast.CallExpr, into sites) {
-	if !isErrorMatcher(calleeOf(call)) {
+// add records pos as the sentinel's emission site, keeping the earliest seen. An
+// empty name (the expression was not a sentinel) is ignored.
+func (e emissions) add(name sentinelName, pos token.Pos) {
+	if name == "" {
 		return
 	}
-	for _, arg := range call.Args {
-		into.add(sentinelOf(pass, arg), arg.Pos())
-	}
-}
-
-// fromField records the sentinel bound to a want/expect-prefixed case field.
-func fromField(pass *analysis.Pass, kv *ast.KeyValueExpr, into sites) {
-	key, ok := kv.Key.(*ast.Ident)
-	if !ok || !isExpectation(memberName(key.Name)) {
+	if prior, seen := e[name]; seen && prior <= pos {
 		return
 	}
-	into.add(sentinelOf(pass, kv.Value), kv.Value.Pos())
+	e[name] = pos
 }
 
-// report emits a diagnostic for each emitted sentinel that is never asserted,
-// in emission order so the output is deterministic, anchored at the package's
-// tests where the missing assertion belongs.
-func report(pass *analysis.Pass, emitted, asserted sites) {
-	at := testAnchor(pass)
-	for _, sentinel := range emitted.sortedUnasserted(asserted) {
-		pass.Reportf(at, message, sentinel.Name())
-	}
-}
-
-// testAnchor is the position every diagnostic is reported at: the package
-// clause of the pass's first test file by name, chosen so the anchor is stable
-// no matter what order the loader presents files in.
-func testAnchor(pass *analysis.Pass) token.Pos {
-	first := ""
-	at := token.NoPos
-	for _, file := range pass.Files {
-		name := string(fileOf(pass, file))
-		if !isTest(fileName(name)) || (first != "" && name >= first) {
-			continue
-		}
-		first, at = name, file.Package
-	}
-	return at
-}
-
-// add records pos as sentinel's site, keeping the earliest position seen. A nil
-// sentinel (the expression was not one) is ignored.
-func (s sites) add(sentinel *types.Const, pos token.Pos) {
-	if sentinel == nil {
-		return
-	}
-	if prior, seen := s[sentinel]; seen && prior <= pos {
-		return
-	}
-	s[sentinel] = pos
-}
-
-// sortedUnasserted returns the sentinels in s that are absent from asserted,
-// ordered by their recorded position.
-func (s sites) sortedUnasserted(asserted sites) []*types.Const {
-	out := make([]*types.Const, 0, len(s))
-	for sentinel := range s {
-		if _, ok := asserted[sentinel]; !ok {
-			out = append(out, sentinel)
+// sortedUnasserted returns the emitted sentinels absent from asserted, ordered
+// by emission position so output is deterministic.
+func (e emissions) sortedUnasserted(asserted assertions) []sentinelName {
+	out := make([]sentinelName, 0, len(e))
+	for name := range e {
+		if !asserted[name] {
+			out = append(out, name)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return s[out[i]] < s[out[j]] })
+	sort.Slice(out, func(i, j int) bool { return e[out[i]] < e[out[j]] })
 	return out
 }
 
-// sentinelOf returns the error-sentinel constant node denotes, or nil when node
-// is not a reference to one.
-func sentinelOf(pass *analysis.Pass, node ast.Node) *types.Const {
+// report emits a diagnostic at each unasserted sentinel's emission site.
+func report(pass *analysis.Pass, emitted emissions, asserted assertions) {
+	for _, name := range emitted.sortedUnasserted(asserted) {
+		pass.Reportf(emitted[name], message, string(name))
+	}
+}
+
+// packageDir is the directory holding the package under analysis, or empty when
+// the pass carries no files.
+func packageDir(fset *token.FileSet, files []*ast.File) dirPath {
+	for _, file := range files {
+		return dirPath(filepath.Dir(fset.Position(file.Pos()).Filename))
+	}
+	return ""
+}
+
+// sentinelOf returns the name of the error-sentinel constant node denotes, or
+// empty when node is not a reference to one.
+func sentinelOf(info *types.Info, node ast.Node) sentinelName {
 	ident := identOf(node)
 	if ident == nil {
-		return nil
+		return ""
 	}
-	constant, ok := pass.TypesInfo.ObjectOf(ident).(*types.Const)
+	constant, ok := info.ObjectOf(ident).(*types.Const)
 	if !ok || !implementsError(constant.Type()) {
-		return nil
+		return ""
 	}
-	return constant
+	return sentinelName(constant.Name())
+}
+
+// nameOf is the identifier an expression names, ignoring any qualifier.
+func nameOf(node ast.Node) sentinelName {
+	if ident := identOf(node); ident != nil {
+		return sentinelName(ident.Name)
+	}
+	return ""
 }
 
 // identOf reduces a node to the identifier naming it, unwrapping parentheses
@@ -230,9 +182,9 @@ func identOf(node ast.Node) *ast.Ident {
 	return nil
 }
 
-// errorInterface is the builtin error interface, resolved once. Universe's
-// error is always an interface, so binding it here keeps implementsError free
-// of a branch that no input could ever take.
+// errorInterface is the builtin error interface, resolved once. Universe binds
+// error to an interface, so resolving it here keeps implementsError free of a
+// branch no input could take.
 var errorInterface = types.Universe.Lookup("error").Type().Underlying().(*types.Interface)
 
 // implementsError reports whether t satisfies the builtin error interface.

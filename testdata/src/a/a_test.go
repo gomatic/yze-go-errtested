@@ -1,4 +1,4 @@
-package a // want "sentinel ErrUntested is emitted by this package but no test asserts it with errors.Is"
+package a
 
 import (
 	"errors"

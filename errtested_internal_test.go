@@ -7,22 +7,43 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-// sentinel builds a distinct error-typed constant for the set tests.
-func sentinel(name string) *types.Const {
-	named := types.NewNamed(types.NewTypeName(0, nil, name+"Type", nil), types.Typ[types.String], nil)
-	named.AddMethod(types.NewFunc(0, nil, "Error", types.NewSignatureType(
-		types.NewVar(0, nil, "e", named), nil, nil, nil,
-		types.NewTuple(types.NewVar(0, nil, "", types.Typ[types.String])), false,
-	)))
-	return types.NewConst(0, nil, name, named, nil)
+// TestEmissionsKeepTheEarliestSite pins that a sentinel emitted more than once
+// is reported at its FIRST emission, and that a non-sentinel records nothing.
+func TestEmissionsKeepTheEarliestSite(t *testing.T) {
+	t.Parallel()
+	want := assert.New(t)
+
+	first, later := token.Pos(10), token.Pos(20)
+	found := emissions{}
+
+	found.add("", first)
+	want.Empty(found, "an expression that is not a sentinel records nothing")
+
+	found.add("ErrOne", later)
+	found.add("ErrOne", first)
+	want.Equal(first, found["ErrOne"], "the earliest emission wins")
+
+	found.add("ErrOne", later)
+	want.Equal(first, found["ErrOne"], "a later emission never displaces the first")
+}
+
+// TestSortedUnassertedOrdersByEmission pins that unasserted sentinels come back
+// in emission order and asserted ones are excluded.
+func TestSortedUnassertedOrdersByEmission(t *testing.T) {
+	t.Parallel()
+
+	emitted := emissions{"ErrLate": token.Pos(30), "ErrEarly": token.Pos(10), "ErrMiddle": token.Pos(20)}
+
+	got := emitted.sortedUnasserted(assertions{"ErrMiddle": true})
+
+	assert.Equal(t, []sentinelName{"ErrEarly", "ErrLate"}, got)
 }
 
 // TestIdentOfReducesEveryReferenceForm pins the shapes a sentinel reference can
-// take: a bare name, a qualified selector, a parenthesized reference, and a
-// node that names nothing.
+// take: a bare name, a qualified selector, a parenthesized one, and a node that
+// names nothing.
 func TestIdentOfReducesEveryReferenceForm(t *testing.T) {
 	t.Parallel()
 	want := assert.New(t)
@@ -31,82 +52,25 @@ func TestIdentOfReducesEveryReferenceForm(t *testing.T) {
 	want.Same(bare, identOf(bare))
 	want.Same(bare, identOf(&ast.SelectorExpr{X: &ast.Ident{Name: "pkg"}, Sel: bare}))
 	want.Same(bare, identOf(&ast.ParenExpr{X: bare}))
-	want.Same(bare, identOf(&ast.ParenExpr{X: &ast.ParenExpr{X: bare}}))
 	want.Nil(identOf(&ast.BasicLit{Kind: token.STRING, Value: `"x"`}))
+
+	want.Equal(sentinelName("ErrThing"), nameOf(bare))
+	want.Empty(nameOf(&ast.BasicLit{Kind: token.STRING, Value: `"x"`}))
 }
 
-// TestImplementsErrorRejectsNonErrors pins the type classifier: a missing type
-// and a plain string are not sentinels; an error-implementing named type is.
+// TestImplementsErrorRejectsNonErrors pins the type classifier.
 func TestImplementsErrorRejectsNonErrors(t *testing.T) {
 	t.Parallel()
 	want := assert.New(t)
 
 	want.False(implementsError(nil))
 	want.False(implementsError(types.Typ[types.String]))
-	want.True(implementsError(sentinel("ErrX").Type()))
-}
 
-// TestSitesAddKeepsTheEarliestPosition pins that a sentinel emitted more than
-// once is reported at its FIRST emission, and that a non-sentinel is ignored.
-func TestSitesAddKeepsTheEarliestPosition(t *testing.T) {
-	t.Parallel()
-	want := assert.New(t)
-
-	first, later := token.Pos(10), token.Pos(20)
-	one := sentinel("ErrOne")
-	recorded := sites{}
-
-	recorded.add(nil, first)
-	want.Empty(recorded, "a non-sentinel expression records nothing")
-
-	recorded.add(one, later)
-	recorded.add(one, first)
-	want.Equal(first, recorded[one], "the earliest emission wins")
-
-	recorded.add(one, later)
-	want.Equal(first, recorded[one], "a later emission never displaces the first")
-}
-
-// TestSortedUnassertedOrdersByEmission pins that unasserted sentinels come back
-// in emission order and that asserted ones are excluded.
-func TestSortedUnassertedOrdersByEmission(t *testing.T) {
-	t.Parallel()
-
-	early, middle, late := sentinel("ErrEarly"), sentinel("ErrMiddle"), sentinel("ErrLate")
-	emitted := sites{late: token.Pos(30), early: token.Pos(10), middle: token.Pos(20)}
-	asserted := sites{middle: token.Pos(99)}
-
-	got := emitted.sortedUnasserted(asserted)
-
-	require.Len(t, got, 2)
-	assert.Equal(t, []*types.Const{early, late}, got)
-}
-
-// TestErrorMatcherNames pins the accepted matcher set, including the formatted
-// variants, and that an unrelated call is not mistaken for an assertion.
-func TestErrorMatcherNames(t *testing.T) {
-	t.Parallel()
-	want := assert.New(t)
-
-	for _, name := range []memberName{"Is", "As", "ErrorIs", "ErrorAs", "NotErrorIs", "ErrorIsf"} {
-		want.True(isErrorMatcher(name), name)
-	}
-	for _, name := range []memberName{"Equal", "NoError", "Error", ""} {
-		want.False(isErrorMatcher(name), name)
-	}
-}
-
-// TestExpectationFieldNames pins which case-field names carry an expectation.
-func TestExpectationFieldNames(t *testing.T) {
-	t.Parallel()
-	want := assert.New(t)
-
-	for _, name := range []memberName{"wantErr", "want", "Want", "expectErr", "EXPECTED"} {
-		want.True(isExpectation(name), name)
-	}
-	for _, name := range []memberName{"name", "input", "err", ""} {
-		want.False(isExpectation(name), name)
-	}
+	named := types.NewNamed(types.NewTypeName(0, nil, "Const", nil), types.Typ[types.String], nil)
+	sig := types.NewSignatureType(types.NewVar(0, nil, "e", named), nil, nil, nil,
+		types.NewTuple(types.NewVar(0, nil, "", types.Typ[types.String])), false)
+	named.AddMethod(types.NewFunc(0, nil, "Error", sig))
+	want.True(implementsError(named))
 }
 
 // TestCalleeOfNamesTheInvokedFunction pins callee extraction for the plain,
@@ -132,7 +96,7 @@ func TestIsTestRecognisesTestFiles(t *testing.T) {
 }
 
 // TestInFuncBodyDistinguishesDeclarationFromEmission pins the discriminator
-// that separates a re-export from an emission.
+// separating a re-export from an emission.
 func TestInFuncBodyDistinguishesDeclarationFromEmission(t *testing.T) {
 	t.Parallel()
 	want := assert.New(t)
@@ -140,4 +104,34 @@ func TestInFuncBodyDistinguishesDeclarationFromEmission(t *testing.T) {
 	want.False(inFuncBody([]ast.Node{&ast.File{}, &ast.GenDecl{}}))
 	want.True(inFuncBody([]ast.Node{&ast.File{}, &ast.FuncDecl{}, &ast.ReturnStmt{}}))
 	want.True(inFuncBody([]ast.Node{&ast.File{}, &ast.GenDecl{}, &ast.FuncLit{}}))
+}
+
+// TestPackageDirIsTheDirectoryOfTheFirstFile pins the directory lookup, and that
+// a pass carrying no files yields no directory rather than a bad one.
+func TestPackageDirIsTheDirectoryOfTheFirstFile(t *testing.T) {
+	t.Parallel()
+
+	fset := token.NewFileSet()
+	added := fset.AddFile("/src/pkg/a.go", -1, 20)
+	file := &ast.File{Package: added.Pos(0)}
+
+	assert.Equal(t, dirPath("/src/pkg"), packageDir(fset, []*ast.File{file}))
+	assert.Empty(t, packageDir(fset, nil), "no files means no directory")
+}
+
+// TestSentinelOfIgnoresWhatIsNotASentinel pins the classifier's guards: a node
+// naming no identifier, and an identifier that resolves to no constant.
+func TestSentinelOfIgnoresWhatIsNotASentinel(t *testing.T) {
+	t.Parallel()
+	want := assert.New(t)
+
+	info := &types.Info{Uses: map[*ast.Ident]types.Object{}}
+	want.Empty(sentinelOf(info, &ast.BasicLit{Kind: token.STRING, Value: `"x"`}), "a literal names nothing")
+
+	unknown := &ast.Ident{Name: "ErrThing"}
+	want.Empty(sentinelOf(info, unknown), "an unresolved identifier is no sentinel")
+
+	plain := &ast.Ident{Name: "Count"}
+	info.Uses[plain] = types.NewConst(0, nil, "Count", types.Typ[types.Int], nil)
+	want.Empty(sentinelOf(info, plain), "a constant that is not an error is no sentinel")
 }

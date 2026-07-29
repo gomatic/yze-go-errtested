@@ -41,7 +41,7 @@ func Closure() func() error {
 }
 
 // Untested emits a sentinel no test asserts.
-func Untested() error { return ErrUntested }
+func Untested() error { return ErrUntested } // want "sentinel ErrUntested is emitted by this package"
 
 // Fallback keeps the package-level var referenced so the fixture compiles.
 func Fallback() error { return fallback }
