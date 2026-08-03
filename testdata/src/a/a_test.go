@@ -72,3 +72,19 @@ type noteCase struct {
 	name string
 	err  error
 }
+
+// TestInline asserts a sentinel bound positionally into an INLINE anonymous
+// case struct, the shape most table-driven tests are written in.
+func TestInline(t *testing.T) {
+	cases := []struct {
+		name    string
+		wantErr error
+	}{
+		{"inline", ErrInline},
+	}
+	for _, tc := range cases {
+		if !errors.Is(Inline(), tc.wantErr) {
+			t.Fatal(tc.name)
+		}
+	}
+}

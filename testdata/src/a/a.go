@@ -14,6 +14,7 @@ const (
 	ErrClosure    errs.Const = "emitted from inside a closure"
 	ErrPositional errs.Const = "asserted through a positionally-bound case field"
 	ErrMentioned  errs.Const = "named in a table that matches nothing generically"
+	ErrInline     errs.Const = "asserted from an inline anonymous case table"
 	ErrUntested   errs.Const = "emitted and never asserted"
 	ErrDeclOnly   errs.Const = "declared and re-exported, never emitted"
 	ErrInVarDecl  errs.Const = "referenced from a var declaration only"
@@ -40,6 +41,10 @@ func Tabled() error { return ErrTabled }
 // unkeyed literal, and match through that case's expectation field — asserted
 // just as surely as a keyed binding.
 func Positional() error { return ErrPositional }
+
+// Inline emits a sentinel the tests bind positionally into an INLINE
+// anonymous case struct — the ordinary table-driven idiom.
+func Inline() error { return ErrInline }
 
 // Mentioned emits a sentinel a test merely names in an unkeyed literal that
 // feeds no generic matcher, so nothing asserts it.
