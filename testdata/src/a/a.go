@@ -8,13 +8,15 @@ import errs "github.com/gomatic/go-error"
 
 // The sentinels this fixture exercises, one per contract branch.
 const (
-	ErrDirect    errs.Const = "asserted directly with errors.Is"
-	ErrTestify   errs.Const = "asserted with testify ErrorIs"
-	ErrTabled    errs.Const = "asserted through a wantErr case field"
-	ErrClosure   errs.Const = "emitted from inside a closure"
-	ErrUntested  errs.Const = "emitted and never asserted"
-	ErrDeclOnly  errs.Const = "declared and re-exported, never emitted"
-	ErrInVarDecl errs.Const = "referenced from a var declaration only"
+	ErrDirect     errs.Const = "asserted directly with errors.Is"
+	ErrTestify    errs.Const = "asserted with testify ErrorIs"
+	ErrTabled     errs.Const = "asserted through a wantErr case field"
+	ErrClosure    errs.Const = "emitted from inside a closure"
+	ErrPositional errs.Const = "asserted through a positionally-bound case field"
+	ErrMentioned  errs.Const = "named in a table that matches nothing generically"
+	ErrUntested   errs.Const = "emitted and never asserted"
+	ErrDeclOnly   errs.Const = "declared and re-exported, never emitted"
+	ErrInVarDecl  errs.Const = "referenced from a var declaration only"
 )
 
 // Alias re-exports a sentinel from a declaration. A declaration reference is
@@ -33,6 +35,15 @@ func Testify() error { return ErrTestify }
 
 // Tabled emits a sentinel the tests assert through a table case's wantErr.
 func Tabled() error { return ErrTabled }
+
+// Positional emits a sentinel the tests bind into a case POSITIONALLY, in an
+// unkeyed literal, and match through that case's expectation field — asserted
+// just as surely as a keyed binding.
+func Positional() error { return ErrPositional }
+
+// Mentioned emits a sentinel a test merely names in an unkeyed literal that
+// feeds no generic matcher, so nothing asserts it.
+func Mentioned() error { return ErrMentioned } // want "sentinel ErrMentioned is emitted by this package"
 
 // Closure emits a sentinel from inside a function literal, which is still an
 // emission because the reference sits in a function body.

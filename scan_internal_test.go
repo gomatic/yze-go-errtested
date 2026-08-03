@@ -2,6 +2,7 @@ package errtested
 
 import (
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
@@ -138,4 +139,155 @@ func TestAssertionsMarkIgnoresTheEmptyName(t *testing.T) {
 	marked.mark("")
 
 	assert.Empty(t, marked)
+}
+
+// parseSource parses one source string into a file for the positional-case
+// helpers to read.
+func parseSource(t *testing.T, src string) *ast.File {
+	t.Helper()
+	parsed, err := parser.ParseFile(token.NewFileSet(), "case_test.go", src, 0)
+	require.NoError(t, err)
+	return parsed
+}
+
+// TestExpectationPositionsIndexesOnlyStructsCarryingOne pins which case types
+// can be read positionally: one whose declaration carries a want/expect field
+// is indexed at that field's position — counting each name of a grouped field
+// and each embedded field separately — and a struct without one is absent, so
+// nothing about it is ever read by position.
+func TestExpectationPositionsIndexesOnlyStructsCarryingOne(t *testing.T) {
+	t.Parallel()
+	want := assert.New(t)
+
+	positions := expectationPositions(parseSource(t, `package p
+
+type tabled struct {
+	name    string
+	wantErr error
+}
+
+type grouped struct {
+	name, detail string
+	expectErr    error
+}
+
+type embedded struct {
+	base
+	wantErr error
+}
+
+type plain struct {
+	name string
+	err  error
+}
+
+type notAStruct = string
+
+const alsoNotAType = 1
+`))
+
+	want.Equal(fieldIndex(1), positions["tabled"])
+	want.Equal(fieldIndex(2), positions["grouped"], "each name of a grouped field fills its own position")
+	want.Equal(fieldIndex(1), positions["embedded"], "an embedded field fills one position")
+	want.NotContains(positions, caseType("plain"), "a struct with no expectation field is never read positionally")
+}
+
+// TestPositionalNamesFlattensInFillOrder pins the flattening an unkeyed
+// literal follows: one entry per name, and one unnamed entry per embedded
+// field.
+func TestPositionalNamesFlattensInFillOrder(t *testing.T) {
+	t.Parallel()
+
+	structure := parseSource(t, `package p
+
+type c struct {
+	base
+	name, detail string
+	wantErr      error
+}
+`).Decls[0].(*ast.GenDecl).Specs[0].(*ast.TypeSpec).Type.(*ast.StructType)
+
+	assert.Equal(t, []string{"", "name", "detail", "wantErr"}, positionalNames(structure.Fields.List))
+}
+
+// TestElementTypeNamesSliceArrayAndMapValues pins where a case literal's type
+// comes from when the literal itself is elided: the element type of a slice or
+// array, or a map's value type. Anything else — an unnamed element type, a
+// literal with no type at all — yields nothing rather than a guess.
+func TestElementTypeNamesSliceArrayAndMapValues(t *testing.T) {
+	t.Parallel()
+	want := assert.New(t)
+
+	named := func(src string) (caseType, bool) {
+		expr := parseSource(t, "package p\n\nvar v = "+src+"\n").
+			Decls[0].(*ast.GenDecl).Specs[0].(*ast.ValueSpec).Values[0].(*ast.CompositeLit)
+		return elementType(expr.Type)
+	}
+
+	got, ok := named("[]tabled{}")
+	want.True(ok)
+	want.Equal(caseType("tabled"), got)
+
+	got, ok = named("[2]tabled{}")
+	want.True(ok)
+	want.Equal(caseType("tabled"), got)
+
+	got, ok = named("map[string]tabled{}")
+	want.True(ok)
+	want.Equal(caseType("tabled"), got)
+
+	_, ok = named("[]*tabled{}")
+	want.False(ok, "an unnamed element type is not read positionally")
+
+	_, ok = named("struct{}{}")
+	want.False(ok)
+}
+
+// TestFromUnkeyedCasesReadsOnlyTheExpectationPosition pins the positional
+// read: the sentinel at the expectation position is recorded, a keyed element
+// there is left to the keyed path, a case shorter than that position is
+// ignored, and a literal of an unindexed type records nothing.
+func TestFromUnkeyedCasesReadsOnlyTheExpectationPosition(t *testing.T) {
+	t.Parallel()
+	want := assert.New(t)
+
+	file := parseSource(t, `package p
+
+type tabled struct {
+	name    string
+	wantErr error
+}
+
+type plain struct {
+	name string
+	err  error
+}
+
+var (
+	slice  = []tabled{{"a", ErrSlice}}
+	decoy  = []tabled{{ErrDecoy, ErrRealOne}}
+	single = tabled{"b", ErrSingle}
+	keyed  = []tabled{{name: "c", wantErr: ErrKeyed}}
+	short  = []tabled{{"d"}}
+	other  = []plain{{"e", ErrPlain}}
+)
+`)
+	positions := expectationPositions(file)
+	got := assertions{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		if lit, ok := n.(*ast.CompositeLit); ok {
+			fromUnkeyedCases(lit, positions, got)
+		}
+		return true
+	})
+
+	want.True(got["ErrSlice"], "an element of a slice of cases is read")
+	want.True(got["ErrRealOne"], "the expectation position is read wherever the case sits")
+	want.False(
+		got["ErrDecoy"],
+		"ONLY the expectation position is read — a sentinel at another position is not asserted by being mentioned there",
+	)
+	want.True(got["ErrSingle"], "a bare case literal is read")
+	want.False(got["ErrKeyed"], "a keyed element belongs to the keyed path")
+	want.False(got["ErrPlain"], "a case type carrying no expectation field is never read positionally")
 }

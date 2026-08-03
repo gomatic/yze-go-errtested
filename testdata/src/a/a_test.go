@@ -46,3 +46,29 @@ func TestClosure(t *testing.T) {
 func TestFallback(t *testing.T) {
 	assert.ErrorIs(t, Fallback(), ErrInVarDecl)
 }
+
+// TestPositional asserts a sentinel bound POSITIONALLY into an unkeyed case
+// literal and matched through the case's expectation field.
+func TestPositional(t *testing.T) {
+	cases := []tabledCase{{"positional", ErrPositional}}
+	for _, tc := range cases {
+		if !errors.Is(Positional(), tc.wantErr) {
+			t.Fatal(tc.name)
+		}
+	}
+}
+
+// TestMentioned names a sentinel in an unkeyed literal but matches nothing
+// generically, so the sentinel stays unasserted.
+func TestMentioned(t *testing.T) {
+	noted := []noteCase{{"mentioned", ErrMentioned}}
+	if len(noted) != 1 {
+		t.Fatal("unreachable")
+	}
+}
+
+// noteCase carries a sentinel no matcher ever receives.
+type noteCase struct {
+	name string
+	err  error
+}
