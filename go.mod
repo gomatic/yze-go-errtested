@@ -3,8 +3,8 @@ module github.com/gomatic/yze-go-errtested
 go 1.26.4
 
 require (
-	github.com/gomatic/go-error v0.3.10
-	github.com/gomatic/go-yze v0.8.13
+	github.com/gomatic/go-error v0.3.13
+	github.com/gomatic/go-yze v0.9.5
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/tools v0.48.0
 )
