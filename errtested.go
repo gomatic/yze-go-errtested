@@ -49,6 +49,16 @@
 //     set does: every identifier a body mentions is an edge, and two files
 //     declaring one name share its scope.
 //
+// One boundary is declared rather than discovered: a test file's init() is not
+// an entry point. It does run — `go test` executes it before any test, and a
+// panic there fails the package — so an assertion made only from init really is
+// executed, and it is still not credited. Crediting it would cost the whole
+// rule, because `func init() { errors.Is(nil, ErrThing) }` is one line that
+// runs no test and can fail nothing: it is `var _ = errors.Is(nil, ErrThing)`
+// in different syntax, and that line is what this rule exists to stop counting.
+// Where the boundary bites, the remedy is to move the assertion into a test
+// function, where a failure names the test that failed.
+//
 // Keying on the emission site rather than the declaration site is what keeps
 // this analyzer quiet across module boundaries: a library that declares
 // sentinels it never returns is not asked to test them, and the consumer that

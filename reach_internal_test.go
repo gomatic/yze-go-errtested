@@ -131,3 +131,30 @@ func TestAssertedFollowsNothingWithoutAnEntryPoint(t *testing.T) {
 
 	assert.Empty(t, found.asserted())
 }
+
+// TestAnInitFunctionIsNotATestEntryPoint records a declared boundary and the
+// discriminator that justifies it, because a test guarding a limitation is a
+// defect until the limitation is shown to be the lesser cost. A test file's
+// init() genuinely runs — `go test` executes it before any test and a panic
+// there fails the package — so the assertion below really is executed, and it
+// is still not credited. Crediting it would reinstate the hole this whole rule
+// closes: `func init() { errors.Is(nil, ErrThing) }` is one line that runs no
+// test and can fail nothing, which is `var _ = errors.Is(nil, ErrThing)` with
+// different syntax. Measured 2026-08-15 across the 242 modules under
+// ~/src/github.com: the boundary produces no finding anywhere, and where it
+// ever bites the remedy is to move the assertion into a test function.
+func TestAnInitFunctionIsNotATestEntryPoint(t *testing.T) {
+	t.Parallel()
+	want := assert.New(t)
+
+	found := scanned(map[string]string{
+		"a_test.go": "package a\n" +
+			"func init() { errors.Is(nil, ErrAtInit) }\n" +
+			"func TestReal(t *testing.T) { errors.Is(nil, ErrInATest) }\n",
+	})
+
+	got := found.asserted()
+
+	want.True(got["ErrInATest"], "the control: an assertion a test runs is credited")
+	want.False(got["ErrAtInit"], "init runs at package load, and package load is not a test")
+}
