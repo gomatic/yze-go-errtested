@@ -174,9 +174,17 @@ func report(pass *analysis.Pass, emitted emissions, asserted assertions) {
 
 // packageDir is the directory holding the package under analysis, or empty when
 // the pass carries no files.
+//
+// The directory is taken from token.File.Name — the path the file was OPENED
+// at — and never from fset.Position, which applies `//line` directives. A
+// relative path in such a directive resolves against the directory of the file
+// carrying it, so a position-derived directory lets one comment line in one
+// source file aim this rule's whole assertion corpus at a directory the package
+// neither compiles nor tests. What a file says about itself cannot decide where
+// the evidence about it is read from.
 func packageDir(fset *token.FileSet, files []*ast.File) dirPath {
 	for _, file := range files {
-		return dirPath(filepath.Dir(fset.Position(file.Pos()).Filename))
+		return dirPath(filepath.Dir(fset.File(file.Pos()).Name()))
 	}
 	return ""
 }
@@ -243,9 +251,16 @@ func isFunc(node ast.Node) bool {
 	return false
 }
 
-// fileOf is the path of the file containing n.
+// fileOf is the path of the file containing n, as the file was OPENED rather
+// than as it describes itself.
+//
+// token.File.Name is the name the go tool selected the file under; fset.Position
+// applies `//line` directives, which are ordinary compiled source. Reading the
+// adjusted name would let a production file claim `//line zz_test.go:1` and have
+// every sentinel it emits treated as a test's, silencing this rule with one
+// comment line that appears in no configuration file and carries no marker.
 func fileOf(pass *analysis.Pass, n ast.Node) fileName {
-	return fileName(pass.Fset.Position(n.Pos()).Filename)
+	return fileName(pass.Fset.File(n.Pos()).Name())
 }
 
 // isTest reports whether name is a Go test file.
