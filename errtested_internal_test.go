@@ -2,12 +2,34 @@ package errtested
 
 import (
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"go/types"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/tools/go/analysis"
 )
+
+// TestFileOfNeverReadsTheAdjustedPath names fileOf's claim: it yields the path
+// the go tool selected the file under, never the path a `//line` directive in
+// that file rewrites positions to. The second assertion is what makes the first
+// mean anything — it proves the directive was in force, so a fileOf reading
+// fset.Position would have answered zz_test.go and dropped the emission.
+func TestFileOfNeverReadsTheAdjustedPath(t *testing.T) {
+	t.Parallel()
+	want := assert.New(t)
+
+	const src = "//line zz_test.go:1\npackage p\n\nvar Sentinel = 1\n"
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "real.go", src, parser.ParseComments)
+	want.NoError(err)
+
+	want.Equal(fileName("real.go"), fileOf(&analysis.Pass{Fset: fset}, file.Decls[0]))
+	want.Equal("zz_test.go", fset.Position(file.Decls[0].Pos()).Filename,
+		"the directive is in force, so reading the adjusted path answers differently")
+}
 
 // TestEmissionsKeepTheEarliestSite pins that a sentinel emitted more than once
 // is reported at its FIRST emission, and that a non-sentinel records nothing.

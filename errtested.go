@@ -175,13 +175,15 @@ func report(pass *analysis.Pass, emitted emissions, asserted assertions) {
 // packageDir is the directory holding the package under analysis, or empty when
 // the pass carries no files.
 //
-// The directory is taken from token.File.Name — the path the file was OPENED
-// at — and never from fset.Position, which applies `//line` directives. A
-// relative path in such a directive resolves against the directory of the file
-// carrying it, so a position-derived directory lets one comment line in one
-// source file aim this rule's whole assertion corpus at a directory the package
-// neither compiles nor tests. What a file says about itself cannot decide where
-// the evidence about it is read from.
+// The directory is token.File.Name's, never fset.Position's: Position applies
+// `//line` directives, and a relative path in one resolves against the carrying
+// file's directory, so one comment line in one source file could aim this rule's
+// whole assertion corpus at a directory the package neither compiles nor tests.
+//
+// token.File.Name is not the author's directory for a cgo package, where it is a
+// build-cache path — measured, along with why this function is nonetheless
+// unaffected and what it therefore leans on, in the open
+// errtested.corpus-dir-is-the-packages-own (k1n81awc).
 func packageDir(fset *token.FileSet, files []*ast.File) dirPath {
 	for _, file := range files {
 		return dirPath(filepath.Dir(fset.File(file.Pos()).Name()))
@@ -251,14 +253,14 @@ func isFunc(node ast.Node) bool {
 	return false
 }
 
-// fileOf is the path of the file containing n, as the file was OPENED rather
-// than as it describes itself.
-//
-// token.File.Name is the name the go tool selected the file under; fset.Position
-// applies `//line` directives, which are ordinary compiled source. Reading the
-// adjusted name would let a production file claim `//line zz_test.go:1` and have
-// every sentinel it emits treated as a test's, silencing this rule with one
-// comment line that appears in no configuration file and carries no marker.
+// fileOf is the path of the file containing n, as the go tool selected it
+// rather than as the file describes itself. fset.Position applies `//line`
+// directives, which are ordinary compiled source, so reading the adjusted name
+// would let a production file claim `//line zz_test.go:1` and have every
+// sentinel it emits treated as a test's — this rule silenced by one comment line
+// that appears in no configuration file and carries no marker. packageDir's cgo
+// caveat is out of reach here, since the go tool rejects `import "C"` in a
+// _test.go and so never renames one into the build cache.
 func fileOf(pass *analysis.Pass, n ast.Node) fileName {
 	return fileName(pass.Fset.File(n.Pos()).Name())
 }
