@@ -18,6 +18,8 @@ const (
 	ErrUntested   errs.Const = "emitted and never asserted"
 	ErrDeclOnly   errs.Const = "declared and re-exported, never emitted"
 	ErrInVarDecl  errs.Const = "referenced from a var declaration only"
+	ErrHidden     errs.Const = "named only by a file no build compiles"
+	ErrForgedCase errs.Const = "named only by a case literal no test reaches"
 )
 
 // Alias re-exports a sentinel from a declaration. A declaration reference is
@@ -55,6 +57,16 @@ func Mentioned() error { return ErrMentioned } // want "sentinel ErrMentioned is
 func Closure() func() error {
 	return func() error { return ErrClosure }
 }
+
+// Hidden emits a sentinel named ONLY by .silence_test.go — a dot-prefixed file
+// the go tool never reads, so no test binary holds a line of it. A file the
+// build excludes is evidence about no build, and forging one silences nothing.
+func Hidden() error { return ErrHidden } // want "sentinel ErrHidden is emitted by this package"
+
+// ForgedCase emits a sentinel named ONLY by a package-level case literal bound
+// to the blank identifier: compiled, run at init, and reached by no test,
+// because nothing can name the blank identifier.
+func ForgedCase() error { return ErrForgedCase } // want "sentinel ErrForgedCase is emitted by this package"
 
 // Untested emits a sentinel no test asserts.
 func Untested() error { return ErrUntested } // want "sentinel ErrUntested is emitted by this package"

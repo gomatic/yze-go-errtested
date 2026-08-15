@@ -15,6 +15,12 @@ type tabledCase struct {
 	wantErr error
 }
 
+// The forgery: a case literal carrying a sentinel in its expectation field,
+// bound to the blank identifier. It is in the test binary and it even runs, at
+// init — and it asserts nothing, because no test can reach it. ErrForgedCase is
+// reported all the same.
+var _ = tabledCase{"forged", ErrForgedCase}
+
 // TestDirect asserts a sentinel with the stdlib matcher.
 func TestDirect(t *testing.T) {
 	if !errors.Is(Direct(), ErrDirect) {

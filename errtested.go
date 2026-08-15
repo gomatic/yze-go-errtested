@@ -24,6 +24,31 @@
 // is the dominant style. The directory holds both. yze/testfile reads the
 // directory for the same reason.
 //
+// Reading the directory is not reading its filenames. The evidence this rule
+// accepts is a test RUN, so a file credits a sentinel only when both of these
+// hold, and forging either one means writing a test that runs:
+//
+//   - THE TEST BUILD COMPILES THE FILE. Which files a build reads is the go
+//     tool's decision and is taken from go/build, not restated here: a name the
+//     tool skips (any leading `.` or `_`) and a build constraint the context
+//     does not satisfy both leave the file out of the test binary, and a file no
+//     test binary compiles is evidence about no test run. A consequence worth
+//     stating: build constraints are evaluated for the platform the analyzer
+//     runs on, the same platform the emission side is read for, so a test file
+//     constrained to another GOOS credits nothing here — just as it asserts
+//     nothing there.
+//
+//   - A TEST RUN REACHES THE CODE. Compiling a line is not running it as a test.
+//     `var _ = errors.Is(nil, ErrThing)` does execute, at init, and asserts
+//     nothing about any test: nothing can name the blank identifier, so no test
+//     can be the thing that runs it. An assertion counts inside a test entry
+//     point (a Test, Benchmark, Fuzz or Example function, including a suite
+//     method named that way), or inside any declaration a reachable one names —
+//     which is how a package-level table counts, through the test that reads it.
+//     Reachability is by name and errs toward accepting, exactly as the matcher
+//     set does: every identifier a body mentions is an edge, and two files
+//     declaring one name share its scope.
+//
 // Keying on the emission site rather than the declaration site is what keeps
 // this analyzer quiet across module boundaries: a library that declares
 // sentinels it never returns is not asked to test them, and the consumer that

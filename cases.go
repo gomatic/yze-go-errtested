@@ -14,12 +14,16 @@ type caseType string
 // fieldIndex is a field's position in its struct's declaration order.
 type fieldIndex int
 
+// expectationFields indexes, per case type, the position its expectation field
+// occupies.
+type expectationFields map[caseType]fieldIndex
+
 // expectationPositions indexes, for each struct type the file declares, the
 // position its want/expect-prefixed field occupies — what an unkeyed case
 // literal fills at that position. A struct with no such field is absent, so
 // nothing about it is ever read positionally.
-func expectationPositions(file *ast.File) map[caseType]fieldIndex {
-	positions := map[caseType]fieldIndex{}
+func expectationPositions(file *ast.File) expectationFields {
+	positions := expectationFields{}
 	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok {
@@ -34,7 +38,7 @@ func expectationPositions(file *ast.File) map[caseType]fieldIndex {
 
 // recordExpectationPosition records spec's expectation-field position when it
 // declares a struct carrying one.
-func recordExpectationPosition(spec ast.Spec, into map[caseType]fieldIndex) {
+func recordExpectationPosition(spec ast.Spec, into expectationFields) {
 	typed, ok := spec.(*ast.TypeSpec)
 	if !ok {
 		return
@@ -84,7 +88,7 @@ func positionalNames(list []*ast.Field) []string {
 // syntax-only, so the case's fields must be visible here: written inline, as
 // table-driven tests usually do, or declared as a named struct in the same
 // file. Anything else is left to the keyed path.
-func fromUnkeyedCases(lit *ast.CompositeLit, fields map[caseType]fieldIndex, into assertions) {
+func fromUnkeyedCases(lit *ast.CompositeLit, fields expectationFields, into assertions) {
 	if at, found := expectationAt(lit.Type, fields); found {
 		markCase(lit, at, into)
 		return
@@ -107,7 +111,7 @@ func fromUnkeyedCases(lit *ast.CompositeLit, fields map[caseType]fieldIndex, int
 // expectationAt is the position a case type's want/expect field occupies:
 // computed directly from an inline struct, or looked up for a named struct the
 // file declares. A type carrying no expectation field is not read positionally.
-func expectationAt(node ast.Expr, fields map[caseType]fieldIndex) (fieldIndex, bool) {
+func expectationAt(node ast.Expr, fields expectationFields) (fieldIndex, bool) {
 	switch typed := node.(type) {
 	case *ast.StructType:
 		if typed.Fields == nil {
